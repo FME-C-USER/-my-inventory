@@ -255,6 +255,8 @@ th,td{border:1px solid #b0bcd0;padding:4px 8px;white-space:nowrap;text-align:cen
     opts = opts || {};
     opts.headers = Object.assign({}, opts.headers || {});
     if (window.API_KEY) opts.headers['X-API-Key'] = window.API_KEY;
+    var _tk = sessionStorage.getItem('inv_auth_token');
+    if (_tk) opts.headers['Authorization'] = 'Bearer ' + _tk;
     return fetch(url, opts);
   }
   var _orig = {
@@ -294,6 +296,7 @@ th,td{border:1px solid #b0bcd0;padding:4px 8px;white-space:nowrap;text-align:cen
 
   window.syncFromDB = async function(){
     var base = _API(); if(!base) return;
+    if(!sessionStorage.getItem('inv_auth_token')) return;   // 未登入不同步
     try {
       var kv = await (await _apiFetch(base + '/api/storage')).json();
       Object.keys(kv||{}).forEach(function(k){ _orig.setItem(k, kv[k]!=null?String(kv[k]):''); });
@@ -304,7 +307,48 @@ th,td{border:1px solid #b0bcd0;padding:4px 8px;white-space:nowrap;text-align:cen
       if(typeof switchTab==='function' && typeof activeSheet!=='undefined'){ try{ switchTab(activeSheet); }catch(e){} }
     } catch(e){ console.warn('[DB] 載入失敗，使用本機資料：', e.message); }
   };
-  window.addEventListener('load', function(){ if(_API()) window.syncFromDB(); });
+
+  // ── 登入 Gate（日翊 EIP 驗證 + 17人白名單；未登入只見登入頁）──
+  function _ivgErr(m){ var e=document.getElementById('ivg-err'); if(e) e.textContent=m||''; }
+  async function _ivgLogin(){
+    var uid=(document.getElementById('ivg-uid').value||'').trim().slice(0,15);
+    var pw =(document.getElementById('ivg-pw').value||'').slice(0,30);
+    var btn=document.getElementById('ivg-btn');
+    if(!uid||!pw){ _ivgErr('請輸入帳號與密碼'); return; }
+    btn.disabled=true; btn.textContent='驗證中…'; _ivgErr('');   // 防重複提交
+    try{
+      var res=await fetch(_API()+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json','X-API-Key':window.API_KEY},body:JSON.stringify({USER_ID:uid,PSW:pw})});
+      var data=await res.json();
+      if(data.ok && data.token){
+        sessionStorage.setItem('inv_auth_token', data.token);
+        sessionStorage.setItem('inv_auth_name', data.name||uid);
+        var g=document.getElementById('ivg'); if(g) g.remove();
+        window.syncFromDB();
+      } else {
+        var M={'100':'帳號或密碼錯誤','200':'AD 認證錯誤','FORBIDDEN':'您不在授權名單（僅限最大帳號 17 人）','998':'系統暫時無法使用，請稍後再試','999':'系統發生錯誤，請聯絡管理員'};
+        _ivgErr(M[data.code]||data.message||'登入失敗');
+      }
+    }catch(e){ _ivgErr('無法連線至伺服器，請確認網路'); }
+    finally{ btn.disabled=false; btn.textContent='登入'; }
+  }
+  window._invLogout=function(){ sessionStorage.removeItem('inv_auth_token'); sessionStorage.removeItem('inv_auth_name'); location.reload(); };
+  function _ivgShow(){
+    if(document.getElementById('ivg')) return;
+    var s=document.createElement('style');
+    s.textContent='#ivg{position:fixed;inset:0;z-index:2147483647;background:linear-gradient(135deg,#1a3560,#2c5282);display:flex;align-items:center;justify-content:center;font-family:"Microsoft JhengHei",Arial,sans-serif}#ivg-box{background:#fff;border-radius:12px;padding:34px 38px;width:330px;box-shadow:0 12px 40px rgba(0,0,0,.35)}#ivg-box h2{margin:0 0 4px;color:#1a3560;font-size:19px;text-align:center}#ivg-box .s{color:#8894aa;font-size:12px;text-align:center;margin-bottom:18px}#ivg-box input{width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:11px;border:1px solid #cdd6e5;border-radius:6px;font-size:14px}#ivg-box button{width:100%;padding:11px;background:#2c5282;color:#fff;border:0;border-radius:6px;font-size:15px;font-weight:700;cursor:pointer}#ivg-box button:disabled{opacity:.6;cursor:not-allowed}#ivg-err{color:#dc2626;font-size:13px;text-align:center;min-height:18px;margin-bottom:6px}#ivg-foot{color:#aab2c2;font-size:11px;text-align:center;margin-top:12px}';
+    document.head.appendChild(s);
+    var g=document.createElement('div'); g.id='ivg';
+    g.innerHTML='<div id="ivg-box"><h2>115年部務會議公版</h2><div class="s">請以日翊帳號登入</div><div id="ivg-err"></div><input id="ivg-uid" placeholder="員工帳號" autocomplete="username"><input id="ivg-pw" type="password" placeholder="密碼" autocomplete="current-password"><button id="ivg-btn">登入</button><div id="ivg-foot">帳號由日翊 EIP 驗證 · 僅限最大帳號名單（17 人）</div></div>';
+    document.body.appendChild(g);
+    document.getElementById('ivg-btn').onclick=_ivgLogin;
+    document.getElementById('ivg-pw').addEventListener('keydown',function(e){ if(e.key==='Enter') _ivgLogin(); });
+    document.getElementById('ivg-uid').focus();
+  }
+  window.addEventListener('load', function(){
+    if(!_API()) return;                                        // 純本機模式不擋
+    if(sessionStorage.getItem('inv_auth_token')) window.syncFromDB();  // 已登入 → 同步
+    else _ivgShow();                                           // 未登入 → 登入頁
+  });
 })();
 </script>
 </head>
