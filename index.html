@@ -239,6 +239,74 @@ th,td{border:1px solid #b0bcd0;padding:4px 8px;white-space:nowrap;text-align:cen
   .sheet-title{display:none !important;}
 }
 </style>
+
+<!-- ============================================================
+     DB Storage Bridge v2 — 透明同步 localStorage → inv-meeting-api + Cloud SQL
+     全部 async + 雙層 try-catch，絕不阻塞/中斷初始化，且不碰 body JS
+     ============================================================ -->
+<script>
+(function(){
+  'use strict';
+  window.API_BASE_URL = 'https://inv-meeting-api-403438157899.asia-east1.run.app';
+  window.API_KEY      = 'e155169fa506cf91321706774e0ff1790496b0e7bc7b3cdbb516f7d9a84c96b3';
+
+  var _API = function(){ return window.API_BASE_URL || ''; };
+  function _apiFetch(url, opts){
+    opts = opts || {};
+    opts.headers = Object.assign({}, opts.headers || {});
+    if (window.API_KEY) opts.headers['X-API-Key'] = window.API_KEY;
+    return fetch(url, opts);
+  }
+  var _orig = {
+    setItem:    localStorage.setItem.bind(localStorage),
+    removeItem: localStorage.removeItem.bind(localStorage)
+  };
+  var STRUCTURED = {
+    'fme_weekly':     '/api/weekly',
+    'fme_inv':        '/api/inventory/legacy',
+    'fme_inv_single': '/api/inventory/single',
+    'fme_inv_double': '/api/inventory/double',
+    'fme_contacts':   '/api/contacts'
+  };
+
+  localStorage.setItem = function(key, value){
+    _orig.setItem(key, value);               // 先寫本機（UI 不受影響）
+    var base = _API(); if(!base) return;      // 純本機模式
+    try {
+      if(STRUCTURED[key]){
+        _apiFetch(base + STRUCTURED[key], {method:'POST', headers:{'Content-Type':'application/json'}, body:value})
+          .catch(function(e){ console.warn('[DB] sync', key, e.message); });
+      } else if(key.indexOf('fme_supermarket_')===0){
+        var c = key.replace('fme_supermarket_','');
+        _apiFetch(base + '/api/supermarket/' + encodeURIComponent(c), {method:'POST', headers:{'Content-Type':'application/json'}, body:value})
+          .catch(function(e){ console.warn('[DB] sm', e.message); });
+      } else {
+        _apiFetch(base + '/api/storage/' + encodeURIComponent(key), {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({value:value})})
+          .catch(function(e){ console.warn('[DB] kv', e.message); });
+      }
+    } catch(e){ /* 絕不中斷初始化 */ }
+  };
+  localStorage.removeItem = function(key){
+    _orig.removeItem(key);
+    var base = _API(); if(!base) return;
+    try { _apiFetch(base + '/api/storage/' + encodeURIComponent(key), {method:'DELETE'}).catch(function(){}); } catch(e){}
+  };
+
+  window.syncFromDB = async function(){
+    var base = _API(); if(!base) return;
+    try {
+      var kv = await (await _apiFetch(base + '/api/storage')).json();
+      Object.keys(kv||{}).forEach(function(k){ _orig.setItem(k, kv[k]!=null?String(kv[k]):''); });
+      var maps = [['fme_weekly','/api/weekly'],['fme_inv','/api/inventory/legacy'],['fme_inv_single','/api/inventory/single'],['fme_inv_double','/api/inventory/double'],['fme_contacts','/api/contacts']];
+      for(var i=0;i<maps.length;i++){
+        try { var d = await (await _apiFetch(base + maps[i][1])).json(); _orig.setItem(maps[i][0], JSON.stringify(d)); } catch(e){}
+      }
+      if(typeof switchTab==='function' && typeof activeSheet!=='undefined'){ try{ switchTab(activeSheet); }catch(e){} }
+    } catch(e){ console.warn('[DB] 載入失敗，使用本機資料：', e.message); }
+  };
+  window.addEventListener('load', function(){ if(_API()) window.syncFromDB(); });
+})();
+</script>
 </head>
 <body>
 
