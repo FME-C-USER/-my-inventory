@@ -943,7 +943,9 @@ th,td{border:1px solid #b0bcd0;padding:4px 8px;white-space:nowrap;text-align:cen
      第13頁：人員次數
 ════════════════════════════════════════════ -->
 <div class="tab-content" id="tab-p13">
-  <div class="sheet-title">附件-人員工作效率及異常件數 <span>公版格式鎖定</span></div>
+  <div class="sheet-title">附件-人員工作效率及異常件數 <span>公版格式鎖定</span>
+    <button onclick="calcP13FromQuality()" style="padding:4px 12px;background:#1a3560;color:#fff;border:none;border-radius:5px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;margin-left:12px;">⚡ 從盤點品質表自動填入</button>
+  </div>
   <div style="display:flex;gap:12px;align-items:flex-start;">
     <div class="tbl-wrap" style="flex:1;min-width:0;">
       <table>
@@ -1632,9 +1634,10 @@ function calcP2FromSched(silent){
       var type=String(r[5]||'').trim();
       var no=String(r[3]||'').trim();
       var dateStr=String(r[2]||'');
-      var mo=dateStr.match(/(\d{4})[\/\-](\d{1,2})/);
+      var mo=dateStr.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
       if(!mo) return;
       var mIdx=parseInt(mo[2])-1;
+      if(parseInt(mo[3])===1) mIdx--; // 次月1號歸屬前一個月
       if(mIdx<0||mIdx>11) return;
 
       if(type==='閉'){
@@ -2041,9 +2044,11 @@ function calcP12FromData(){
     var type=String(r[5]||'').trim();
     if(['閉','轉','解','續'].indexOf(type)<0) return;
     var dateStr=String(r[2]||'').trim();
-    var mo=dateStr.match(/(\d{4})[\/\-](\d{1,2})/);
+    var mo=dateStr.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
     if(!mo) return;
-    if(parseInt(mo[2])!==prevMonth||parseInt(mo[1])!==prevYear) return;
+    var effMonth=parseInt(mo[2]), effYear=parseInt(mo[1]);
+    if(parseInt(mo[3])===1){ effMonth--; if(effMonth<1){ effMonth=12; effYear--; } } // 次月1號歸屬前一個月
+    if(effMonth!==prevMonth||effYear!==prevYear) return;
     var storeNo=String(r[3]||'').trim();
     var storeName=String(r[4]||'').trim();
     // 型態「轉」= RC->FC，店型固定為直營店
@@ -2101,6 +2106,47 @@ function calcP12FromData(){
 }
 
 // 第13頁
+
+// ── 從盤點品質表同步至人員工作效率（依課別分流，不覆蓋異常事項欄）──────
+function calcP13FromQuality(silent){
+  var allRows;
+  try{ allRows=JSON.parse(localStorage.getItem('fme_quality_data')||'[]'); }catch(e){ allRows=[]; }
+  if(!allRows.length && window._QUALITY_DATA) allRows=window._QUALITY_DATA;
+  if(!allRows.length){
+    if(!silent) alert('尚無盤點品質表資料，請先匯入盤點品質Excel');
+    return;
+  }
+  function rowCourse(r){ return (typeof r==='object'&&!Array.isArray(r))?(r.course||''):(r[1]||''); }
+  var courses=Array.from(new Set(allRows.map(rowCourse).filter(Boolean)));
+  if(!courses.length) courses=[currentCourse];
+
+  var totalCount=0;
+  courses.forEach(function(course){
+    var rows=allRows.filter(function(r){ return rowCourse(r)===course; });
+    rows.forEach(function(r,i){
+      var isObj=typeof r==='object'&&!Array.isArray(r);
+      var name=isObj?r.name:(r[0]||'');
+      var a=isObj?r.a:(r[4]||''); var b=isObj?r.b:(r[5]||'');
+      var c=isObj?r.c:(r[6]||''); var d=isObj?r.d:(r[7]||'');
+      db[course+'_p13_'+i+'_0']=name;
+      db[course+'_p13_'+i+'_1']=a;
+      db[course+'_p13_'+i+'_2']=b;
+      db[course+'_p13_'+i+'_3']=c;
+      db[course+'_p13_'+i+'_4']=d;
+    });
+    totalCount+=rows.length;
+  });
+  localStorage.setItem('fme_bumeeting',JSON.stringify(db));
+  try{ renderP13(); }catch(e){}
+  if(!silent){
+    var note=document.getElementById('save-note');
+    if(note){
+      note.textContent='✔ 已從盤點品質表同步至人員工作效率，共'+totalCount+'筆（'+courses.length+'課）';
+      setTimeout(function(){note.textContent='資料自動存於瀏覽器本機';},6000);
+    }
+  }
+}
+
 function renderP13(){
   function buildRows(startRow, endRow){
     let html='';
@@ -2173,10 +2219,11 @@ function importWeeklyReport(input){
       // 從日期字串抽月份（民國 115/01/02 或西元 2025-01-02）
       function getMonth(d){
         const s=String(d||'').trim();
-        const r1=s.match(/^\d{2,3}\/(\d{1,2})\//); if(r1) return parseInt(r1[1]);
-        const r2=s.match(/^\d{4}[-\/](\d{1,2})[-\/]/); if(r2) return parseInt(r2[1]);
+        function rollBack(m,day){ if(day!==1) return m; m--; return m<1?-1:m; } // 次月1號歸屬前一個月
+        const r1=s.match(/^\d{2,3}\/(\d{1,2})\/(\d{1,2})/); if(r1) return rollBack(parseInt(r1[1]),parseInt(r1[2]));
+        const r2=s.match(/^\d{4}[-\/](\d{1,2})[-\/](\d{1,2})/); if(r2) return rollBack(parseInt(r2[1]),parseInt(r2[2]));
         const n=parseFloat(s);
-        if(!isNaN(n)&&n>10000){ const dt=new Date(Math.round((n-25569)*86400*1000)); return dt.getMonth()+1; }
+        if(!isNaN(n)&&n>10000){ const dt=new Date(Math.round((n-25569)*86400*1000)); return rollBack(dt.getMonth()+1,dt.getDate()); }
         return -1;
       }
 
@@ -2273,8 +2320,9 @@ function calcP3FromWeekly(weeklyRows, months){
 
   function getMonth(d){
     const s=String(d||'').trim();
-    const r1=s.match(/^\d{2,3}\/(\d{1,2})\//); if(r1) return parseInt(r1[1]);
-    const r2=s.match(/^\d{4}[-\/](\d{1,2})[-\/]/); if(r2) return parseInt(r2[1]);
+    function rollBack(m,day){ if(day!==1) return m; m--; return m<1?-1:m; } // 次月1號歸屬前一個月
+    const r1=s.match(/^\d{2,3}\/(\d{1,2})\/(\d{1,2})/); if(r1) return rollBack(parseInt(r1[1]),parseInt(r1[2]));
+    const r2=s.match(/^\d{4}[-\/](\d{1,2})[-\/](\d{1,2})/); if(r2) return rollBack(parseInt(r2[1]),parseInt(r2[2]));
     return -1;
   }
 
@@ -2371,9 +2419,13 @@ function toDateInput(s){
   const str = String(s).trim();
   // 已是 YYYY-MM-DD
   if(/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
-  // YYYY/MM/DD 或 YYYY/M/D
-  const m = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-  if(m) return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  // YYYY/MM/DD、YYYY/M/D，或民國年 115/07/15（3碼年需轉西元，<input type="date"> 才能辨識）
+  const m = str.match(/^(\d{3,4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if(m){
+    let yr = parseInt(m[1],10);
+    if(yr < 1000) yr += 1911; // 民國轉西元
+    return `${yr}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  }
   // ISO 字串 (e.g. 2024-01-02T00:00:00.000Z)
   if(str.length > 10 && str.includes('T')) return str.slice(0,10);
   return str;
@@ -5080,11 +5132,12 @@ function importQualityExcel(input){
       localStorage.setItem('fme_quality_data',JSON.stringify(data));
       window._QUALITY_DATA=data;
       renderQuality();
+      calcP13FromQuality(true);
       var _s=activeSheet;
       setTimeout(function(){ switchTab(_s==='p1'?'p2':'p1'); setTimeout(function(){ switchTab(_s); },0); },0);
       input.value='';
       var note=document.getElementById('save-note');
-      note.textContent='✔ 盤點品質表匯入完成，共'+data.length+'筆（'+statStr+'）';
+      note.textContent='✔ 盤點品質表匯入完成，共'+data.length+'筆（'+statStr+'），已同步至人員工作效率';
       setTimeout(function(){note.textContent='資料自動存於瀏覽器本機';},8000);
     }catch(err){alert('❌ 匯入失敗：'+err.message);input.value='';}
   };
